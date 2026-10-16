@@ -614,13 +614,14 @@ function trace(prev, end) {
   while (prev.has(out[out.length - 1])) out.push(prev.get(out[out.length - 1]));
   return out.reverse();
 }
-function routeTo(fromK, toK) {
-  S.from = fromK; S.to = toK; S.pathMsg = null;
+const saveRoute = () => store.set("route", S.from || S.to ? { from: S.from, to: S.to } : null);
+function routeTo(fromK, toK, fit = true) {
+  S.from = fromK; S.to = toK; S.pathMsg = null; saveRoute();
   const { prev, hit } = bfsTiered(fromK, c => c.key === toK);
   S.path = hit ? trace(prev, hit) : null;
   if (!hit) S.pathMsg = t("unreachable");
   renderSide(); requestDraw();
-  if (S.path) fitKeys(S.path);
+  if (S.path && fit) fitKeys(S.path);
 }
 function routeClosest(fromK) {
   if (!fromK) return toast(t("setCurFirst"));
@@ -628,11 +629,11 @@ function routeClosest(fromK) {
   if (!S.matches.size) return toast(t("searchFirst"));
   const { prev, hit } = bfsTiered(fromK, c => S.matches.has(c.key));
   if (!hit) return toast(t("noReach", { c: fromK }));
-  S.from = fromK; S.to = hit; S.pathMsg = null;
-  S.path = trace(prev, hit); S.sel = hit;
+  S.from = fromK; S.to = hit; S.pathMsg = null; saveRoute();
+  S.path = trace(prev, hit); S.sel = hit; store.set("sel", hit);
   renderSide(); requestDraw(); fitKeys(S.path);
 }
-function clearRoute() { S.from = S.to = S.path = S.pathMsg = null; renderSide(); requestDraw(); }
+function clearRoute() { S.from = S.to = S.path = S.pathMsg = null; saveRoute(); renderSide(); requestDraw(); }
 function setCur(k, quiet) {
   S.cur = k; store.set("cur", k);
   $("#cur").value = k || "";
@@ -776,8 +777,17 @@ function wrap(text, maxW) {
   return lines;
 }
 
+let viewT = 0;
+function saveView() {
+  clearTimeout(viewT);
+  viewT = setTimeout(() => {
+    const [cx, cy] = toGrid(vp.clientWidth / 2, vp.clientHeight / 2);
+    store.set("view", { z: S.zoom, cx, cy });
+  }, 400);
+}
 function draw() {
   drawQueued = false;
+  if (viewRestored) saveView();
   const dpr = window.devicePixelRatio || 1;
   const W = vp.clientWidth, H = vp.clientHeight, s = cs();
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -1136,12 +1146,13 @@ $("#side").addEventListener("click", e => {
     if (b.dataset.act === "setHere") setCur(k);
     if (b.dataset.act === "pathHere") routeTo(S.cur, k);
     if (b.dataset.act === "copy") copy(k);
-  } else if (li) { S.sel = li.dataset.k; centerKey(li.dataset.k); renderSide(); }
+  } else if (li) { S.sel = li.dataset.k; store.set("sel", S.sel); centerKey(li.dataset.k); renderSide(); }
 });
 
 // ---------- interactions ----------
 function select(k, center) {
   S.sel = cells.has(k) ? k : null;
+  store.set("sel", S.sel);
   if (S.sel && center) centerKey(k);
   renderSide(); requestDraw();
   if (S.sel && window.matchMedia("(max-width: 760px)").matches) $("#side").classList.remove("hidden");
@@ -1162,7 +1173,7 @@ function openMenu(k, mx, my) {
   if (!c) return;
   const items = [
     ["iamHere", () => setCur(k)],
-    ["from", () => { S.from = k; S.to = null; S.path = null; S.pathMsg = null; toast(t("pickFrom", { c: k })); renderSide(); requestDraw(); }],
+    ["from", () => { S.from = k; S.to = null; S.path = null; S.pathMsg = null; saveRoute(); toast(t("pickFrom", { c: k })); renderSide(); requestDraw(); }],
     ["to", () => routeTo(S.from || S.cur, k)],
   ];
   if (S.matches.size) items.push(["closestFrom", () => routeClosest(k)]);
@@ -1293,7 +1304,7 @@ $("#cur").addEventListener("change", e => {
 });
 $("#cur").addEventListener("keydown", e => { if (e.key === "Enter") e.target.blur(); });
 $("#btnClosest").onclick = () => routeClosest(S.cur);
-$("#btnPanel").onclick = () => $("#side").classList.toggle("hidden");
+$("#btnPanel").onclick = () => store.set("panelHidden", $("#side").classList.toggle("hidden"));
 
 function setMode(m) {
   S.mode = m; store.set("mode", m);
@@ -1397,16 +1408,29 @@ $("#lRu").onclick = () => setLang("ru");
 $("#lEn").onclick = () => setLang("en");
 
 // ---------- boot ----------
-if (window.matchMedia("(max-width: 760px)").matches) $("#side").classList.add("hidden");
+let viewRestored = false; // don't overwrite the saved view with the initial layout
+if (store.get("panelHidden", window.matchMedia("(max-width: 760px)").matches)) $("#side").classList.add("hidden");
 setMode(S.mode);
 setLang(S.lang);
 $("#q").value = S.query;
 resize();
 setCur(S.cur, true);
 runSearch();
+{
+  const sel = store.get("sel", null), route = store.get("route", null);
+  if (sel && cells.has(sel)) S.sel = sel;
+  if (route?.from && route?.to) routeTo(route.from, route.to, false);
+  else if (route?.from) { S.from = route.from; renderSide(); }
+}
 requestAnimationFrame(() => {
-  if (S.cur && cells.has(S.cur)) centerKey(S.cur, 0.6);
+  const v = store.get("view", null);
+  if (v && isFinite(v.z) && isFinite(v.cx) && isFinite(v.cy)) {
+    cancelAnimationFrame(panAnim);
+    setZoom(v.z);
+    setScroll((v.cx - minX) * cs() + offX() - vp.clientWidth / 2, (v.cy - minY) * cs() + offY() - vp.clientHeight / 2);
+  } else if (S.cur && cells.has(S.cur)) centerKey(S.cur, 0.6);
   else fitBox(980, 988, 1042, 1042);
+  viewRestored = true;
 });
 </script>
 </body>
