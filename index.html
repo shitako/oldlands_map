@@ -197,12 +197,13 @@ const localImg = path => path
   .replace(/^\/image\/map\/map\.jpg$/, "img/map.jpg")
   .replace(/^\/inc\/maps\/events_img\//, "img/events/");
 // load local copy first, fall back to the live site once if it's missing
-function loadImg(path, onDone) {
+// (localOnly: the file exists only in this repo — never ask the live site for it)
+function loadImg(path, onDone, localOnly = false) {
   const im = new Image();
   im.decoding = "async";
   im.onload = () => onDone(im);
   im.onerror = () => {
-    if (im.src.startsWith(IMG_BASE)) { im.failed = true; onDone(im); }
+    if (localOnly || im.src.startsWith(IMG_BASE)) { im.failed = true; onDone(im); }
     else im.src = IMG_BASE + path;
   };
   im.src = localImg(path);
@@ -383,8 +384,11 @@ const OVERVIEW = {
   xs: [[0, 980 - OV_U / OV_K], [900, 980 + (900 - OV_U) / OV_K]],
   ys: [[0, 990 - OV_V / OV_K], [564, 990 + (564 - OV_V) / OV_K]],
 };
-const minX = Math.floor(Math.min(...R.map(r => r.x0), OVERVIEW.xs[0][1])), maxX = Math.ceil(Math.max(...R.map(r => r.x1), OVERVIEW.xs.at(-1)[1] - 1));
-const minY = Math.floor(Math.min(...R.map(r => r.y0), OVERVIEW.ys[0][1])), maxY = Math.ceil(Math.max(...R.map(r => r.y1), OVERVIEW.ys.at(-1)[1] - 1));
+// Sharper whole-world overview stitched from nlservice.cc tiles (see img/map_full.json):
+// top-left is cell 922_954, 180x114 cells. map.jpg is shown until it has loaded.
+const FULL = { src: "img/map_full.jpg", x0: 922, y0: 954, w: 180, h: 114 };
+const minX = Math.floor(Math.min(...R.map(r => r.x0), OVERVIEW.xs[0][1], FULL.x0)), maxX = Math.ceil(Math.max(...R.map(r => r.x1), OVERVIEW.xs.at(-1)[1] - 1, FULL.x0 + FULL.w - 1));
+const minY = Math.floor(Math.min(...R.map(r => r.y0), OVERVIEW.ys[0][1], FULL.y0)), maxY = Math.ceil(Math.max(...R.map(r => r.y1), OVERVIEW.ys.at(-1)[1] - 1, FULL.y0 + FULL.h - 1));
 const GW = maxX - minX + 1, GH = maxY - minY + 1;
 const key = (x, y) => x + "_" + y;
 
@@ -745,7 +749,7 @@ function pumpTiles() {
     if (inflight >= MAX_INFLIGHT) break;
     if (imgs.has(url)) continue;
     inflight++;
-    imgs.set(url, loadImg(url, () => { inflight--; requestDraw(); }));
+    imgs.set(url, loadImg(url, () => { inflight--; requestDraw(); }, EXTRA_URLS.has(url)));
   }
   want = [];
 }
@@ -811,6 +815,15 @@ function draw() {
     if (im) ctx.drawImage(im, px, py, s + bleed, s + bleed);
     else if (walk) { ctx.fillStyle = "#4a5a3a"; ctx.fillRect(px, py, s + bleed, s + bleed); }
     if (!walk) { ctx.fillStyle = im ? "rgba(8,10,14,.5)" : "rgba(8,10,14,.3)"; ctx.fillRect(px, py, s + bleed, s + bleed); }
+  }
+  // day-only tiles outside the regions; at night they are darkened instead
+  for (const [x, y] of EXTRA) {
+    if (x < gx0 || x > gx1 || y < gy0 || y > gy1) continue;
+    const px = X(x), py = Y(y);
+    const im = tile(x, y, 1e6 + Math.abs(px + s / 2 - W / 2) + Math.abs(py + s / 2 - H / 2), "day");
+    if (!im) continue;
+    ctx.drawImage(im, px, py, s + bleed, s + bleed);
+    if (S.mode === "night") { ctx.fillStyle = "rgba(6,14,40,.45)"; ctx.fillRect(px, py, s + bleed, s + bleed); }
   }
   tilesReady = need ? have / need : 1;
   // once the screen is complete, prefetch the other day/night set so a switch is instant
@@ -933,17 +946,41 @@ const TILES = [];
     if (!seen.has(key(x, y))) { seen.add(key(x, y)); TILES.push([x, y]); }
 }
 let tilesReady = 1;
+// Day tiles that exist in this repo but lie outside the API regions (cropped from
+// nlservice.cc). img/tiles_day.txt lists every day tile on disk; there are no night
+// versions of these, so they are only ever requested as day tiles.
+const EXTRA = [], EXTRA_URLS = new Set();
+fetch("img/tiles_day.txt").then(r => r.ok ? r.text() : "").then(txt => {
+  const have = new Set(TILES.map(([x, y]) => key(x, y)));
+  for (const k of txt.split(/\s+/)) {
+    if (!/^\d+_\d+$/.test(k) || have.has(k)) continue;
+    const [x, y] = k.split("_").map(Number);
+    EXTRA.push([x, y]); EXTRA_URLS.add(`/image/map/world/day/${y}/${k}.jpg`);
+  }
+  requestDraw();
+}).catch(() => {});
 
 const ovImg = loadImg(OVERVIEW.path, requestDraw);
+const fullImg = new Image();
+fullImg.onload = requestDraw;
+fullImg.src = FULL.src;
 function drawOverview(X, Y, W, H) {
-  if (!ovImg.complete || !ovImg.naturalWidth) return;
-  const { xs, ys } = OVERVIEW;
   ctx.imageSmoothingQuality = "high";
-  for (let i = 0; i < xs.length - 1; i++) for (let j = 0; j < ys.length - 1; j++) {
-    const dx = X(xs[i][1]), dy = Y(ys[j][1]), dw = X(xs[i + 1][1]) - dx, dh = Y(ys[j + 1][1]) - dy;
-    if (dx > W || dy > H || dx + dw < 0 || dy + dh < 0) continue;
-    ctx.drawImage(ovImg, xs[i][0], ys[j][0], xs[i + 1][0] - xs[i][0], ys[j + 1][0] - ys[j][0], dx, dy, dw + .5, dh + .5);
-  }
+  if (fullImg.complete && fullImg.naturalWidth) {
+    // only the visible part, so deep zoom doesn't scale the whole 4500px image
+    const s = X(1) - X(0), k = fullImg.naturalWidth / FULL.w, fx = X(FULL.x0), fy = Y(FULL.y0);
+    const u0 = Math.max(0, -fx / s), v0 = Math.max(0, -fy / s);
+    const u1 = Math.min(FULL.w, (W - fx) / s), v1 = Math.min(FULL.h, (H - fy) / s);
+    if (u1 > u0 && v1 > v0)
+      ctx.drawImage(fullImg, u0 * k, v0 * k, (u1 - u0) * k, (v1 - v0) * k, fx + u0 * s, fy + v0 * s, (u1 - u0) * s, (v1 - v0) * s);
+  } else if (ovImg.complete && ovImg.naturalWidth) {
+    const { xs, ys } = OVERVIEW;
+    for (let i = 0; i < xs.length - 1; i++) for (let j = 0; j < ys.length - 1; j++) {
+      const dx = X(xs[i][1]), dy = Y(ys[j][1]), dw = X(xs[i + 1][1]) - dx, dh = Y(ys[j + 1][1]) - dy;
+      if (dx > W || dy > H || dx + dw < 0 || dy + dh < 0) continue;
+      ctx.drawImage(ovImg, xs[i][0], ys[j][0], xs[i + 1][0] - xs[i][0], ys[j + 1][0] - ys[j][0], dx, dy, dw + .5, dh + .5);
+    }
+  } else return;
   ctx.imageSmoothingQuality = "medium";
   // match the overview's mood to the tile set
   ctx.fillStyle = S.mode === "night" ? "rgba(6,14,40,.4)" : "rgba(0,0,0,.12)";

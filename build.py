@@ -92,6 +92,17 @@ def download_images(regions, cells):
     missing_file.write_text("\n".join(sorted(known_missing)) + "\n")
     print(f"images: {stats['ok']} downloaded, {stats['missing']} not on server, {stats['failed']} failed"
           + (" (re-run to retry)" if stats["failed"] else ""), file=sys.stderr)
+    write_tile_list()
+
+
+def write_tile_list():
+    """img/tiles_day.txt: every x_y that has a day tile on disk (the game's map
+    script reads it to avoid requesting tiles that don't exist). Includes the
+    day-only tiles cropped from nlservice.cc outside the API regions."""
+    keys = sorted((int(y), int(x)) for x, y in
+                  (f.stem.split("_") for f in (IMG / "world" / "day").glob("*/*_*.jpg")))
+    (IMG / "tiles_day.txt").write_bytes("".join(f"{x}_{y}\n" for y, x in keys).encode())
+    print(f"tiles_day.txt: {len(keys)} day tiles", file=sys.stderr)
 
 
 def clean(s):
