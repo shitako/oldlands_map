@@ -816,14 +816,12 @@ function draw() {
     else if (walk) { ctx.fillStyle = "#4a5a3a"; ctx.fillRect(px, py, s + bleed, s + bleed); }
     if (!walk) { ctx.fillStyle = im ? "rgba(8,10,14,.5)" : "rgba(8,10,14,.3)"; ctx.fillRect(px, py, s + bleed, s + bleed); }
   }
-  // day-only tiles outside the regions; at night they are darkened instead
+  // tiles outside the regions (from nlservice.cc)
   for (const [x, y] of EXTRA) {
     if (x < gx0 || x > gx1 || y < gy0 || y > gy1) continue;
     const px = X(x), py = Y(y);
-    const im = tile(x, y, 1e6 + Math.abs(px + s / 2 - W / 2) + Math.abs(py + s / 2 - H / 2), "day");
-    if (!im) continue;
-    ctx.drawImage(im, px, py, s + bleed, s + bleed);
-    if (S.mode === "night") { ctx.fillStyle = "rgba(6,14,40,.45)"; ctx.fillRect(px, py, s + bleed, s + bleed); }
+    const im = tile(x, y, 1e6 + Math.abs(px + s / 2 - W / 2) + Math.abs(py + s / 2 - H / 2));
+    if (im) ctx.drawImage(im, px, py, s + bleed, s + bleed);
   }
   tilesReady = need ? have / need : 1;
   // once the screen is complete, prefetch the other day/night set so a switch is instant
@@ -946,16 +944,17 @@ const TILES = [];
     if (!seen.has(key(x, y))) { seen.add(key(x, y)); TILES.push([x, y]); }
 }
 let tilesReady = 1;
-// Day tiles that exist in this repo but lie outside the API regions (cropped from
-// nlservice.cc). img/tiles_day.txt lists every day tile on disk; there are no night
-// versions of these, so they are only ever requested as day tiles.
+// Tiles that exist in this repo but lie outside the API regions (cropped from
+// nlservice.cc; their night versions are darkened copies). img/tiles_day.txt lists
+// every day tile on disk, and each has a night tile too.
 const EXTRA = [], EXTRA_URLS = new Set();
 fetch("img/tiles_day.txt").then(r => r.ok ? r.text() : "").then(txt => {
   const have = new Set(TILES.map(([x, y]) => key(x, y)));
   for (const k of txt.split(/\s+/)) {
     if (!/^\d+_\d+$/.test(k) || have.has(k)) continue;
     const [x, y] = k.split("_").map(Number);
-    EXTRA.push([x, y]); EXTRA_URLS.add(`/image/map/world/day/${y}/${k}.jpg`);
+    EXTRA.push([x, y]);
+    for (const m of ["day", "night"]) EXTRA_URLS.add(`/image/map/world/${m}/${y}/${k}.jpg`);
   }
   requestDraw();
 }).catch(() => {});
